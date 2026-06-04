@@ -51,6 +51,8 @@ pub struct LoopGuardConfig {
     pub ping_pong_min_repeats: u32,
     /// Max warnings per unique tool call hash before upgrading to Block.
     pub max_warnings_per_call: u32,
+    /// Cap `agent_send` calls per agent loop (orchestrator / meta-agents).
+    pub max_agent_send_per_loop: Option<u32>,
 }
 
 impl Default for LoopGuardConfig {
@@ -64,6 +66,7 @@ impl Default for LoopGuardConfig {
             outcome_block_threshold: 3,
             ping_pong_min_repeats: 3,
             max_warnings_per_call: 3,
+            max_agent_send_per_loop: None,
         }
     }
 }
@@ -119,6 +122,8 @@ pub struct LoopGuard {
     blocked_calls: u32,
     /// Map from call hash to tool name (for stats reporting).
     hash_to_tool: HashMap<String, String>,
+    /// `agent_send` invocations in this loop (for delegation caps).
+    agent_send_calls: u32,
 }
 
 impl LoopGuard {
@@ -135,6 +140,7 @@ impl LoopGuard {
             poll_counts: HashMap::new(),
             blocked_calls: 0,
             hash_to_tool: HashMap::new(),
+            agent_send_calls: 0,
         }
     }
 
@@ -154,6 +160,21 @@ impl LoopGuard {
                  The agent appears to be stuck.",
                 self.config.global_circuit_breaker
             ));
+        }
+
+        // Per-turn delegation cap (orchestrator agent_send storms)
+        if tool_name == "agent_send" {
+            self.agent_send_calls += 1;
+            if let Some(max) = self.config.max_agent_send_per_loop {
+                if self.agent_send_calls > max {
+                    self.blocked_calls += 1;
+                    return LoopGuardVerdict::CircuitBreak(format!(
+                        "Delegation limit: agent_send called {} times (max {max} per turn). \
+                         Synthesize results from specialists already contacted and reply to the user.",
+                        self.agent_send_calls
+                    ));
+                }
+            }
         }
 
         let hash = Self::compute_hash(tool_name, params);
@@ -183,13 +204,18 @@ impl LoopGuard {
 
         // Determine effective thresholds (poll tools get relaxed thresholds)
         let is_poll = Self::is_poll_call(tool_name, params);
-        let multiplier = if is_poll {
-            self.config.poll_multiplier
+        let is_delegate = matches!(tool_name, "agent_send" | "agent_list" | "agent_spawn");
+        let (effective_warn, effective_block) = if is_delegate {
+            (2, 4)
+        } else if is_poll {
+            let m = self.config.poll_multiplier;
+            (
+                self.config.warn_threshold * m,
+                self.config.block_threshold * m,
+            )
         } else {
-            1
+            (self.config.warn_threshold, self.config.block_threshold)
         };
-        let effective_warn = self.config.warn_threshold * multiplier;
-        let effective_block = self.config.block_threshold * multiplier;
 
         // Check per-hash thresholds
         if count_val >= effective_block {

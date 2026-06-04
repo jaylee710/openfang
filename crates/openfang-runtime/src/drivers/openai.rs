@@ -6,9 +6,9 @@ use crate::llm_driver::{CompletionRequest, CompletionResponse, LlmDriver, LlmErr
 use crate::think_filter::{FilterAction, StreamingThinkFilter};
 use async_trait::async_trait;
 use futures::StreamExt;
-use openfang_types::message::{ContentBlock, MessageContent, Role, StopReason, TokenUsage};
-use openfang_types::model_catalog::MOONSHOT_KIMI_BASE_URL;
-use openfang_types::tool::ToolCall;
+use omtae_types::message::{ContentBlock, MessageContent, Role, StopReason, TokenUsage};
+use omtae_types::model_catalog::MOONSHOT_KIMI_BASE_URL;
+use omtae_types::tool::ToolCall;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, warn};
 use zeroize::Zeroizing;
@@ -179,6 +179,31 @@ fn rejects_temperature(model: &str) -> bool {
 fn temperature_must_be_one(model: &str) -> bool {
     let m = model.to_lowercase();
     m.starts_with("kimi-k2") || m == "kimi-k2.5" || m == "kimi-k2.5-0711"
+}
+
+/// True for self-hosted OpenAI-compatible endpoints (vLLM, Ollama, LM Studio, Lemonade).
+fn is_local_openai_compatible(base_url: &str) -> bool {
+    let url = base_url.to_lowercase();
+    url.contains("localhost")
+        || url.contains("127.0.0.1")
+        || url.contains(":8000")
+        || url.contains(":11434")
+        || url.contains(":1234")
+        || url.contains("vllm")
+        || url.contains("ollama")
+        || url.contains("lmstudio")
+        || url.contains("lemonade")
+}
+
+/// Explicit tool_choice when tools are present. Local/vLLM servers often ignore the
+/// tools array unless tool_choice is set (otherwise models emit fake JSON in text).
+/// Use the string `"auto"` — vLLM rejects `{"type":"auto"}` (validation: function None).
+fn tool_choice_for_tools(has_tools: bool, _base_url: &str) -> Option<serde_json::Value> {
+    if has_tools {
+        Some(serde_json::json!("auto"))
+    } else {
+        None
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -565,7 +590,7 @@ impl LlmDriver for OpenAIDriver {
                 function: OaiToolDef {
                     name: t.name.clone(),
                     description: t.description.clone(),
-                    parameters: openfang_types::tool::normalize_schema_for_provider(
+                    parameters: omtae_types::tool::normalize_schema_for_provider(
                         &t.input_schema,
                         "openai",
                     ),
@@ -573,11 +598,7 @@ impl LlmDriver for OpenAIDriver {
             })
             .collect();
 
-        let tool_choice = if oai_tools.is_empty() {
-            None
-        } else {
-            Some(serde_json::json!("auto"))
-        };
+        let tool_choice = tool_choice_for_tools(!oai_tools.is_empty(), &self.base_url);
 
         let (mt, mct) = if uses_completion_tokens(&request.model) {
             (None, Some(request.max_tokens))
@@ -992,7 +1013,7 @@ impl LlmDriver for OpenAIDriver {
                 function: OaiToolDef {
                     name: t.name.clone(),
                     description: t.description.clone(),
-                    parameters: openfang_types::tool::normalize_schema_for_provider(
+                    parameters: omtae_types::tool::normalize_schema_for_provider(
                         &t.input_schema,
                         "openai",
                     ),
@@ -1000,11 +1021,7 @@ impl LlmDriver for OpenAIDriver {
             })
             .collect();
 
-        let tool_choice = if oai_tools.is_empty() {
-            None
-        } else {
-            Some(serde_json::json!("auto"))
-        };
+        let tool_choice = tool_choice_for_tools(!oai_tools.is_empty(), &self.base_url);
 
         let (mt, mct) = if uses_completion_tokens(&request.model) {
             (None, Some(request.max_tokens))
