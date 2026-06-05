@@ -51,7 +51,7 @@ listen_addr = "127.0.0.1:4200"           # OFP listen address
 # interval_secs = 900
 # stuck_run_secs = 900
 # kill_disallowed = false          # when true, stops agents outside [agents] autospawn
-# manual_allowlist = ["orchestrator"]
+# manual_allowlist = ["orchestrator", "ops-fixer"]
 # checks = ["autospawn", "allowlist", "stuck_run"]
 
 # [agents]

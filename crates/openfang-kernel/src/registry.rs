@@ -292,6 +292,17 @@ impl AgentRegistry {
         }
     }
 
+    /// Replace the full agent manifest (hot-swap — takes effect on next message).
+    pub fn replace_manifest(&self, id: AgentId, manifest: omtae_types::agent::AgentManifest) -> OMTAEResult<()> {
+        let mut entry = self
+            .agents
+            .get_mut(&id)
+            .ok_or_else(|| OMTAEError::AgentNotFound(id.to_string()))?;
+        entry.manifest = manifest;
+        entry.last_active = chrono::Utc::now();
+        Ok(())
+    }
+
     /// Update an agent's system prompt (hot-swap, takes effect on next message).
     pub fn update_system_prompt(&self, id: AgentId, new_prompt: String) -> OMTAEResult<()> {
         let mut entry = self

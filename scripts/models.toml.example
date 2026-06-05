@@ -16,12 +16,12 @@ quantization = "awq"
 
 [[profiles]]
 id = "qwen36-obliterated-27b"
-display_name = "Qwen3.6 27B OBLITERATED BF16 (vLLM)"
+display_name = "Qwen3.6 27B OBLITERATED (FP8, ~17GiB/GPU min)"
 vllm_path = "/home/jay/llm-models/Qwen3.6-27B-OBLITERATED"
 tensor_parallel = 2
-max_model_len = 8192
-gpu_mem_util = 0.85
+max_model_len = 16384
+gpu_mem_util = 0.78
 vllm_served_name = "OBLITERATUS/Qwen3.6-27B-OBLITERATED"
 omtae_model_id = "OBLITERATUS/Qwen3.6-27B-OBLITERATED"
 start_script = "/home/jay/start-vllm-qwen36-obliterated.sh"
-quantization = "bfloat16"
+quantization = "fp8"

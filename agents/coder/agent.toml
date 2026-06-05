@@ -7,10 +7,10 @@ max_history_messages = 8
 tags = ["coding", "implementation", "rust", "python"]
 
 [model]
-provider = "default"
-model = "default"
-api_key_env = "GEMINI_API_KEY"
-max_tokens = 8192
+provider = "vllm"
+model = "OBLITERATUS/Qwen3.6-27B-OBLITERATED"
+api_key_env = "VLLM_API_KEY"
+max_tokens = 4096
 temperature = 0.3
 system_prompt = """You are Coder, an expert software engineer agent running inside the OMTAE Agent OS.
 
@@ -34,9 +34,9 @@ RESEARCH:
 - Check official documentation before guessing at API usage."""
 
 [[fallback_models]]
-provider = "default"
-model = "default"
-api_key_env = "GROQ_API_KEY"
+provider = "vllm"
+model = "OBLITERATUS/Qwen3.6-27B-OBLITERATED"
+api_key_env = "VLLM_API_KEY"
 
 [resources]
 max_llm_tokens_per_hour = 200000

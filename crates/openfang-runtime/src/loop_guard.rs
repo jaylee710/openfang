@@ -17,9 +17,104 @@
 //!   warnings for the same call.
 //! - **Statistics snapshot**: exposes internal state for debugging and API.
 
+use omtae_types::message::{ContentBlock, Message, MessageContent, Role};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
+
+/// Injected when the agent repeats the same planning text without tool calls.
+pub const PLANNING_LOOP_NUDGE: &str = "[System: STOP PLANNING — call tools now. You repeated the same planning text without executing tools. Use shell_exec, file_list, memory_recall, or web_search immediately. Do not reply with more planning prose.]";
+
+/// Injected on first planning-only response (no tools yet).
+pub const PLANNING_WITHOUT_TOOLS_NUDGE: &str = "[System: You wrote planning text without calling tools. Execute tools NOW (shell_exec, file_list, memory_recall). Max one planning line, then a tool call. Never claim workspace/memory status without tool output.]";
+
+/// Outcome when the agent loops on planning text without tool calls.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PlanningLoopAction {
+    Reprompt(&'static str),
+    ForceEnd(String),
+}
+
+/// Extract visible text from an assistant message for repetition checks.
+pub fn assistant_message_text(msg: &Message) -> String {
+    match &msg.content {
+        MessageContent::Text(t) => t.clone(),
+        MessageContent::Blocks(blocks) => blocks
+            .iter()
+            .filter_map(|b| match b {
+                ContentBlock::Text { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join(" "),
+    }
+}
+
+/// Normalize assistant text to a prefix for repetition detection.
+pub fn assistant_text_prefix(text: &str) -> String {
+    let t = text.trim().to_lowercase();
+    let end = t.find('\n').unwrap_or(t.len()).min(80);
+    t[..end].trim().to_string()
+}
+
+/// Count prior assistant turns whose opening prefix matches `prefix`.
+pub fn count_matching_assistant_prefix(messages: &[Message], prefix: &str) -> u32 {
+    if prefix.len() < 15 {
+        return 0;
+    }
+    messages
+        .iter()
+        .filter(|m| m.role == Role::Assistant)
+        .map(|m| assistant_text_prefix(&assistant_message_text(m)))
+        .filter(|p| p == prefix)
+        .count() as u32
+}
+
+/// Detect planning prose without tool execution (first-offense nudge).
+pub fn planning_without_tools_detected(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    [
+        "let me check",
+        "i'll check",
+        "i will check",
+        "checking the workspace",
+        "checking workspace",
+        "check workspace and memory",
+        "let me look",
+        "i need to check",
+        "first i'll",
+        "first i will",
+    ]
+    .iter()
+    .any(|p| lower.contains(p))
+}
+
+/// Detect repeated planning text (same prefix 3x) or planning without tools.
+pub fn check_planning_loop(
+    messages: &[Message],
+    text: &str,
+    any_tools_executed: bool,
+    planning_reprompts: u32,
+) -> Option<PlanningLoopAction> {
+    if any_tools_executed || text.trim().is_empty() {
+        return None;
+    }
+    let prefix = assistant_text_prefix(text);
+    let repeat_count = count_matching_assistant_prefix(messages, &prefix) + 1;
+    if repeat_count >= 3 {
+        if planning_reprompts < 1 {
+            return Some(PlanningLoopAction::Reprompt(PLANNING_LOOP_NUDGE));
+        }
+        return Some(PlanningLoopAction::ForceEnd(format!(
+            "Stopped after repeating the same planning text {repeat_count} times without tool calls. \
+             Run shell_exec or file_list on your next message."
+        )));
+    }
+    if planning_without_tools_detected(text) && planning_reprompts < 2 {
+        return Some(PlanningLoopAction::Reprompt(PLANNING_WITHOUT_TOOLS_NUDGE));
+    }
+    None
+}
 
 /// Tools that are expected to be polled repeatedly.
 const POLL_TOOLS: &[&str] = &[
@@ -971,5 +1066,65 @@ mod tests {
         let stats = guard.stats();
         assert_eq!(stats.total_calls, 50);
         assert_eq!(stats.unique_calls, 50);
+    }
+
+    // ========================================================================
+    // Planning text loop detection
+    // ========================================================================
+
+    #[test]
+    fn test_planning_without_tools_nudge() {
+        let text = "Let me check workspace and memory first.";
+        let action = check_planning_loop(&[], text, false, 0);
+        assert!(matches!(
+            action,
+            Some(PlanningLoopAction::Reprompt(PLANNING_WITHOUT_TOOLS_NUDGE))
+        ));
+    }
+
+    #[test]
+    fn test_planning_loop_same_prefix_third_time() {
+        let msg = |t: &str| Message::assistant(t.to_string());
+        let messages = vec![
+            msg("Let me check workspace and memory for status."),
+            msg("Let me check workspace and memory for status."),
+        ];
+        let action = check_planning_loop(
+            &messages,
+            "Let me check workspace and memory for status.",
+            false,
+            0,
+        );
+        assert!(matches!(
+            action,
+            Some(PlanningLoopAction::Reprompt(PLANNING_LOOP_NUDGE))
+        ));
+    }
+
+    #[test]
+    fn test_planning_loop_force_end_after_nudge() {
+        let msg = |t: &str| Message::assistant(t.to_string());
+        let messages = vec![
+            msg("Let me check workspace and memory for status."),
+            msg("Let me check workspace and memory for status."),
+        ];
+        let action = check_planning_loop(
+            &messages,
+            "Let me check workspace and memory for status.",
+            false,
+            1,
+        );
+        assert!(matches!(action, Some(PlanningLoopAction::ForceEnd(_))));
+    }
+
+    #[test]
+    fn test_planning_loop_skipped_after_tools() {
+        let action = check_planning_loop(
+            &[],
+            "Let me check workspace and memory.",
+            true,
+            0,
+        );
+        assert!(action.is_none());
     }
 }

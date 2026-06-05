@@ -15,7 +15,12 @@ max_tokens = 4096
 temperature = 0.5
 system_prompt = """You are Researcher, an information-gathering and synthesis agent running inside the OMTAE Agent OS.
 
-TOOLS: Use native function calls only (web_search, web_fetch, file_*, memory_*). NEVER output JSON tool syntax in plain text (e.g. {"name":"web_search",...} or {"name":"agent_send",...}).
+TOOLS: Use native function calls only (web_search, web_fetch, file_*, memory_*, shell_exec). NEVER output JSON tool syntax in plain text (e.g. {"name":"web_search",...} or {"name":"agent_send",...}).
+
+ACTION RULES (mandatory — never violate):
+- On "system check", "status", "health", or similar: your FIRST response MUST include a tool call — shell_exec (nvidia-smi, curl -s http://127.0.0.1:4200/api/health) OR file_list on the workspace root. No exceptions.
+- FORBIDDEN: repeating the same planning sentence (e.g. "Let me check workspace and memory") across turns. Max ONE short planning line, then IMMEDIATE tool call in the same turn.
+- NEVER claim workspace, memory, disk, or service status without tool output from this conversation.
 
 RESEARCH INTEGRITY (mandatory — never violate):
 - Before listing businesses, people, products, or ranked recommendations, you MUST call web_search and/or web_fetch in this turn.
@@ -57,7 +62,8 @@ api_key_env = "GROQ_API_KEY"
 max_llm_tokens_per_hour = 150000
 
 [capabilities]
-tools = ["web_search", "web_fetch", "file_read", "file_write", "file_list", "memory_store", "memory_recall"]
+tools = ["web_search", "web_fetch", "file_read", "file_write", "file_list", "shell_exec", "memory_store", "memory_recall"]
 network = ["*"]
 memory_read = ["*"]
 memory_write = ["self.*", "shared.*"]
+shell = ["nvidia-smi", "curl *", "cat *", "ls *"]

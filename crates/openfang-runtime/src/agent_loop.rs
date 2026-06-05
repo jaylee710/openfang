@@ -11,7 +11,9 @@ use crate::embedding::EmbeddingDriver;
 use crate::kernel_handle::KernelHandle;
 use crate::llm_driver::{CompletionRequest, DriverConfig, LlmDriver, LlmError, StreamEvent};
 use crate::llm_errors;
-use crate::loop_guard::{LoopGuard, LoopGuardConfig, LoopGuardVerdict};
+use crate::loop_guard::{
+    check_planning_loop, LoopGuard, LoopGuardConfig, LoopGuardVerdict, PlanningLoopAction,
+};
 use crate::mcp::McpConnection;
 use crate::tool_runner;
 use crate::web_search::WebToolsContext;
@@ -649,6 +651,7 @@ pub async fn run_agent_loop(
     };
     let mut loop_guard = LoopGuard::new(loop_guard_config);
     let mut consecutive_max_tokens: u32 = 0;
+    let mut planning_reprompts: u32 = 0;
 
     // Build context budget from model's actual context window (or fallback to default)
     let ctx_window = context_window_tokens.unwrap_or(DEFAULT_CONTEXT_WINDOW);
@@ -854,6 +857,38 @@ pub async fn run_agent_loop(
                 } else {
                     text
                 };
+
+                // Planning loop guard: repeated planning prose without tool calls.
+                if let Some(action) =
+                    check_planning_loop(&messages, &text, any_tools_executed, planning_reprompts)
+                {
+                    match action {
+                        PlanningLoopAction::Reprompt(nudge) => {
+                            warn!(agent = %manifest.name, planning_reprompts, "Planning loop detected — re-prompting for tool use");
+                            planning_reprompts += 1;
+                            messages.push(Message::assistant(text));
+                            messages.push(Message::user(nudge.to_string()));
+                            continue;
+                        }
+                        PlanningLoopAction::ForceEnd(response) => {
+                            warn!(agent = %manifest.name, "Planning loop exhausted — ending turn");
+                            final_response = response;
+                            session.messages.push(Message::assistant(final_response.clone()));
+                            memory
+                                .save_session_async(session)
+                                .await
+                                .map_err(|e| OMTAEError::Memory(e.to_string()))?;
+                            return Ok(AgentLoopResult {
+                                response: final_response,
+                                total_usage,
+                                iterations: iteration + 1,
+                                cost_usd: None,
+                                silent: false,
+                                directives: omtae_types::message::ReplyDirectives::default(),
+                            });
+                        }
+                    }
+                }
 
                 final_response = apply_research_integrity_check(
                     text,
@@ -1880,6 +1915,7 @@ pub async fn run_agent_loop_streaming(
     };
     let mut loop_guard = LoopGuard::new(loop_guard_config);
     let mut consecutive_max_tokens: u32 = 0;
+    let mut planning_reprompts: u32 = 0;
 
     // Build context budget from model's actual context window (or fallback to default)
     let ctx_window = context_window_tokens.unwrap_or(DEFAULT_CONTEXT_WINDOW);
@@ -2087,6 +2123,39 @@ pub async fn run_agent_loop_streaming(
                 } else {
                     text
                 };
+
+                // Planning loop guard (streaming path).
+                if let Some(action) =
+                    check_planning_loop(&messages, &text, any_tools_executed, planning_reprompts)
+                {
+                    match action {
+                        PlanningLoopAction::Reprompt(nudge) => {
+                            warn!(agent = %manifest.name, planning_reprompts, "Planning loop detected (streaming) — re-prompting for tool use");
+                            planning_reprompts += 1;
+                            messages.push(Message::assistant(text));
+                            messages.push(Message::user(nudge.to_string()));
+                            continue;
+                        }
+                        PlanningLoopAction::ForceEnd(response) => {
+                            warn!(agent = %manifest.name, "Planning loop exhausted (streaming) — ending turn");
+                            final_response = response;
+                            session.messages.push(Message::assistant(final_response.clone()));
+                            memory
+                                .save_session_async(session)
+                                .await
+                                .map_err(|e| OMTAEError::Memory(e.to_string()))?;
+                            return Ok(AgentLoopResult {
+                                response: final_response,
+                                total_usage,
+                                iterations: iteration + 1,
+                                cost_usd: None,
+                                silent: false,
+                                directives: omtae_types::message::ReplyDirectives::default(),
+                            });
+                        }
+                    }
+                }
+
                 final_response = apply_research_integrity_check(
                     text,
                     &messages,

@@ -81,4 +81,6 @@ hf download OBLITERATUS/Qwen3.6-27B-OBLITERATED \
   --exclude 'gguf/*'
 ```
 
-BF16 27B may OOM on 2×24GB; prefer AWQ/GGUF variants when available. The start script is `~/start-vllm-qwen36-obliterated.sh`.
+BF16 weights (~51GB) need **runtime FP8** (`--quantization fp8`) on 2×3090 for stable load. Verified profile: **32k** context (`max_model_len=32768`, `gpu_memory_utilization=0.85`, TP=2). Tradeoffs: GPUs run hot/near-full (~24GB/GPU), KV pool allows ~2 concurrent 32k requests max; full BF16 without FP8 usually OOMs. Start: `~/start-vllm-qwen36-obliterated.sh` (env: `OMTAE_QWEN36_MAX_LEN`, `OMTAE_VLLM_GPU_MEM`, `OMTAE_VLLM_QUANT`).
+
+Qwen2.5 Coder AWQ stays at **16k** default in `~/start-vllm-qwen-coder.sh`; 32k on AWQ 32B is untested on this host—try `OMTAE_CODER_MAX_LEN=32768 OMTAE_VLLM_GPU_MEM=0.72` only if you accept OOM risk.

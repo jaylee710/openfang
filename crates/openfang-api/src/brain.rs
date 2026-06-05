@@ -121,14 +121,16 @@ pub fn resolve_safe_path(root: &Path, rel: &str) -> Result<PathBuf, String> {
     }
     let joined = root.join(trimmed);
     let canonical = if joined.exists() {
-        joined.canonicalize()
+        joined
+            .canonicalize()
+            .map_err(|e| format!("resolve path: {e}"))?
     } else {
-        joined.parent()
+        joined
+            .parent()
             .and_then(|p| p.canonicalize().ok())
             .map(|p| p.join(joined.file_name().unwrap_or_default()))
-            .ok_or_else(|| "invalid path".to_string())
-    }
-    .map_err(|e| format!("resolve path: {e}"))?;
+            .ok_or_else(|| "invalid path".to_string())?
+    };
     if !canonical.starts_with(root) {
         return Err("path escapes vault root".to_string());
     }

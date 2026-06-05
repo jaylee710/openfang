@@ -898,10 +898,20 @@ pub async fn restart_agent(
         .registry
         .set_state(agent_id, omtae_types::agent::AgentState::Running);
 
+    // Hot-reload manifest from disk (prompt, tools, exec_policy, etc.)
+    let manifest_reloaded = match state.kernel.reload_agent_manifest_from_disk(agent_id) {
+        Ok(()) => true,
+        Err(e) => {
+            tracing::warn!(agent = %agent_name, error = %e, "Agent restart: manifest disk reload failed");
+            false
+        }
+    };
+
     tracing::info!(
         agent = %agent_name,
         previous_state = %previous_state,
         task_cancelled = was_running,
+        manifest_reloaded,
         "Agent restarted via API"
     );
 
@@ -913,6 +923,7 @@ pub async fn restart_agent(
             "agent_id": id,
             "previous_state": previous_state,
             "task_cancelled": was_running,
+            "manifest_reloaded": manifest_reloaded,
         })),
     )
 }

@@ -3331,6 +3331,47 @@ impl OMTAEKernel {
     ///
     /// This is best-effort: a failure to write is logged but does not
     /// propagate as an error — the authoritative copy lives in SQLite.
+    /// Reload an agent's manifest from `~/.omtae/agents/<name>/agent.toml` into
+    /// the in-memory registry (capabilities, exec_policy, tools, prompt, etc.).
+    /// Used by hot-reload paths so disk edits take effect without a daemon restart.
+    pub fn reload_agent_manifest_from_disk(&self, agent_id: AgentId) -> KernelResult<()> {
+        let entry = self
+            .registry
+            .get(agent_id)
+            .ok_or_else(|| OMTAEError::AgentNotFound(agent_id.to_string()))?;
+        let name = entry.name.clone();
+        let toml_path = self
+            .config
+            .home_dir
+            .join("agents")
+            .join(&name)
+            .join("agent.toml");
+        let toml_str = std::fs::read_to_string(&toml_path).map_err(|e| {
+            OMTAEError::Config(format!(
+                "Failed to read {}: {e}",
+                toml_path.display()
+            ))
+        })?;
+        let disk_manifest: AgentManifest = toml::from_str(&toml_str).map_err(|e| {
+            OMTAEError::Config(format!("Invalid agent TOML for {name}: {e}"))
+        })?;
+        let merged = merge_disk_manifest_preserving_kernel_defaults(disk_manifest, &entry.manifest);
+        let caps = manifest_to_capabilities(&merged);
+        self.capabilities.grant(agent_id, caps);
+        let mut updated = entry;
+        updated.manifest = merged;
+        normalize_request_driven_agent_schedule(&mut updated.manifest);
+        if updated.manifest.exec_policy.is_none() {
+            updated.manifest.exec_policy = Some(self.config.exec_policy.clone());
+        }
+        self.registry.replace_manifest(agent_id, updated.manifest.clone())?;
+        if let Some(entry) = self.registry.get(agent_id) {
+            let _ = self.memory.save_agent(&entry);
+        }
+        info!(agent = %name, "Reloaded agent manifest from disk");
+        Ok(())
+    }
+
     pub fn persist_manifest_to_disk(&self, agent_id: AgentId) {
         if let Some(entry) = self.registry.get(agent_id) {
             let dir = self.config.home_dir.join("agents").join(&entry.name);
