@@ -1323,6 +1323,9 @@ pub struct KernelConfig {
     /// Runtime drift watchdog (`[watchdog]` in config.toml).
     #[serde(default)]
     pub watchdog: WatchdogConfig,
+    /// ECC harness integration (`[ecc]` in config.toml). See docs/ECC-OMTAE.md.
+    #[serde(default)]
+    pub ecc: EccConfig,
     /// Per-skill runtime config (from `[skills.<skill-name>]` sections).
     ///
     /// When a skill declares a `config:` section in its SKILL.md frontmatter,
@@ -1678,8 +1681,17 @@ impl Default for KernelConfig {
             compaction: CompactionSettings::default(),
             agents: AgentsConfig::default(),
             watchdog: WatchdogConfig::default(),
+            ecc: EccConfig::default(),
         }
     }
+}
+
+/// ECC (Everything Claude Code) integration for OMTAE (`[ecc]`).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct EccConfig {
+    /// Enable ECC integration (runtime gates always on; this flag logs + documents intent).
+    pub enabled: bool,
 }
 
 /// Drift watchdog — periodic self-check and safe auto-remediation (`[watchdog]`).

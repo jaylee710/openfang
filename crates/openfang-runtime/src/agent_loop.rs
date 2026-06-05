@@ -12,7 +12,8 @@ use crate::kernel_handle::KernelHandle;
 use crate::llm_driver::{CompletionRequest, DriverConfig, LlmDriver, LlmError, StreamEvent};
 use crate::llm_errors;
 use crate::loop_guard::{
-    check_planning_loop, LoopGuard, LoopGuardConfig, LoopGuardVerdict, PlanningLoopAction,
+    check_planning_loop, check_verification_gate, LoopGuard, LoopGuardConfig, LoopGuardVerdict,
+    PlanningLoopAction,
 };
 use crate::mcp::McpConnection;
 use crate::tool_runner;
@@ -652,6 +653,7 @@ pub async fn run_agent_loop(
     let mut loop_guard = LoopGuard::new(loop_guard_config);
     let mut consecutive_max_tokens: u32 = 0;
     let mut planning_reprompts: u32 = 0;
+    let mut verification_reprompts: u32 = 0;
 
     // Build context budget from model's actual context window (or fallback to default)
     let ctx_window = context_window_tokens.unwrap_or(DEFAULT_CONTEXT_WINDOW);
@@ -857,6 +859,41 @@ pub async fn run_agent_loop(
                 } else {
                     text
                 };
+
+                // Verification gate: factual claims without tool evidence (ECC-inspired).
+                if let Some(action) = check_verification_gate(
+                    &messages,
+                    &text,
+                    any_tools_executed,
+                    verification_reprompts,
+                ) {
+                    match action {
+                        PlanningLoopAction::Reprompt(nudge) => {
+                            warn!(agent = %manifest.name, verification_reprompts, "Verification gate — TOOL_REQUIRED reprompt");
+                            verification_reprompts += 1;
+                            messages.push(Message::assistant(text));
+                            messages.push(Message::user(nudge.to_string()));
+                            continue;
+                        }
+                        PlanningLoopAction::ForceEnd(response) => {
+                            warn!(agent = %manifest.name, "Verification gate exhausted — ending turn");
+                            final_response = response;
+                            session.messages.push(Message::assistant(final_response.clone()));
+                            memory
+                                .save_session_async(session)
+                                .await
+                                .map_err(|e| OMTAEError::Memory(e.to_string()))?;
+                            return Ok(AgentLoopResult {
+                                response: final_response,
+                                total_usage,
+                                iterations: iteration + 1,
+                                cost_usd: None,
+                                silent: false,
+                                directives: omtae_types::message::ReplyDirectives::default(),
+                            });
+                        }
+                    }
+                }
 
                 // Planning loop guard: repeated planning prose without tool calls.
                 if let Some(action) =
@@ -1916,6 +1953,7 @@ pub async fn run_agent_loop_streaming(
     let mut loop_guard = LoopGuard::new(loop_guard_config);
     let mut consecutive_max_tokens: u32 = 0;
     let mut planning_reprompts: u32 = 0;
+    let mut verification_reprompts: u32 = 0;
 
     // Build context budget from model's actual context window (or fallback to default)
     let ctx_window = context_window_tokens.unwrap_or(DEFAULT_CONTEXT_WINDOW);
@@ -2123,6 +2161,41 @@ pub async fn run_agent_loop_streaming(
                 } else {
                     text
                 };
+
+                // Verification gate (streaming path).
+                if let Some(action) = check_verification_gate(
+                    &messages,
+                    &text,
+                    any_tools_executed,
+                    verification_reprompts,
+                ) {
+                    match action {
+                        PlanningLoopAction::Reprompt(nudge) => {
+                            warn!(agent = %manifest.name, verification_reprompts, "Verification gate (streaming) — TOOL_REQUIRED reprompt");
+                            verification_reprompts += 1;
+                            messages.push(Message::assistant(text));
+                            messages.push(Message::user(nudge.to_string()));
+                            continue;
+                        }
+                        PlanningLoopAction::ForceEnd(response) => {
+                            warn!(agent = %manifest.name, "Verification gate exhausted (streaming) — ending turn");
+                            final_response = response;
+                            session.messages.push(Message::assistant(final_response.clone()));
+                            memory
+                                .save_session_async(session)
+                                .await
+                                .map_err(|e| OMTAEError::Memory(e.to_string()))?;
+                            return Ok(AgentLoopResult {
+                                response: final_response,
+                                total_usage,
+                                iterations: iteration + 1,
+                                cost_usd: None,
+                                silent: false,
+                                directives: omtae_types::message::ReplyDirectives::default(),
+                            });
+                        }
+                    }
+                }
 
                 // Planning loop guard (streaming path).
                 if let Some(action) =

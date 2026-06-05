@@ -895,6 +895,12 @@ impl OMTAEKernel {
             skill_registry.freeze();
         }
 
+        if config.ecc.enabled {
+            info!(
+                "ECC integration enabled — runtime TOOL_REQUIRED gates active; install skills via scripts/install-ecc-skills.sh"
+            );
+        }
+
         // Initialize hand registry (curated autonomous packages)
         let hand_registry = omtae_hands::registry::HandRegistry::new();
         let hand_count = hand_registry.load_bundled();

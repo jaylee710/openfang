@@ -87,6 +87,9 @@ pub fn build_system_prompt(ctx: &PromptContext) -> String {
     // Section 2 — Tool Call Behavior (skip for subagents)
     if !ctx.is_subagent {
         sections.push(TOOL_CALL_BEHAVIOR.to_string());
+        if !ctx.granted_tools.is_empty() {
+            sections.push(TOOL_FIRST_RULE.to_string());
+        }
         if ctx.granted_tools.iter().any(|t| t == "agent_send") {
             sections.push(AGENT_DELEGATION_BEHAVIOR.to_string());
         }
@@ -252,6 +255,14 @@ fn build_identity_section(ctx: &PromptContext) -> String {
         ctx.base_system_prompt.clone()
     }
 }
+
+/// Tool-first discipline (ECC-inspired): verify before claiming facts.
+const TOOL_FIRST_RULE: &str = "\
+## Tool-First Rule (mandatory)
+- NEVER state file paths, URLs, service status, peer-agent lists, vault contents, or counts without tool output in this conversation.
+- On status/brain/vault/workspace questions: FIRST action is a tool call (shell_exec, file_list, web_search, memory_recall, or curl /api/brain/*).
+- Max ONE short planning line per turn, then IMMEDIATE tool call. Forbidden: \"The user is asking about…\" meta-narration loops.
+- If you lack tool evidence, say \"I need to check\" and call a tool — do not guess or narrate peer agents.";
 
 /// Static tool-call behavior directives.
 const TOOL_CALL_BEHAVIOR: &str = "\
