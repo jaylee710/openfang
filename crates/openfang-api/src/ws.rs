@@ -1560,12 +1560,13 @@ fn extract_status_code(s: &str) -> Option<u16> {
 /// Some models (MiniMax, DeepSeek, etc.) wrap their reasoning in `<think>` tags.
 /// These are internal chain-of-thought and shouldn't be shown to the user.
 pub fn strip_think_tags(text: &str) -> String {
+    const CLOSE: &str = "</think>";
     let mut result = String::with_capacity(text.len());
     let mut remaining = text;
     while let Some(start) = remaining.find("<think>") {
         result.push_str(&remaining[..start]);
-        if let Some(end) = remaining[start..].find("</think>") {
-            remaining = &remaining[(start + end + 8)..]; // 8 = "</think>".len()
+        if let Some(end) = remaining[start..].find(CLOSE) {
+            remaining = &remaining[(start + end + CLOSE.len())..];
         } else {
             // Unclosed <think> tag — strip to end
             remaining = "";
@@ -1573,7 +1574,12 @@ pub fn strip_think_tags(text: &str) -> String {
         }
     }
     result.push_str(remaining);
-    result
+    // Qwen3.x sometimes emits orphan closing tags with no opener — drop preamble.
+    let trimmed = result.trim();
+    if let Some(idx) = trimmed.find(CLOSE) {
+        return trimmed[(idx + CLOSE.len())..].trim().to_string();
+    }
+    trimmed.to_string()
 }
 
 // ---------------------------------------------------------------------------
@@ -1778,6 +1784,13 @@ mod tests {
         );
         assert_eq!(strip_think_tags("No thinking here"), "No thinking here");
         assert_eq!(strip_think_tags("<think>all thinking</think>"), "");
+        // Qwen3.x orphan closing tag (no opener)
+        assert_eq!(
+            strip_think_tags(
+                "The user said hello.\n</think>\n\nHey Jay! How can I help?"
+            ),
+            "Hey Jay! How can I help?"
+        );
     }
 
     // -----------------------------------------------------------------------

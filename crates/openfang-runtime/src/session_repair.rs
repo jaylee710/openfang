@@ -224,6 +224,32 @@ pub fn ensure_starts_with_user(mut messages: Vec<Message>) -> Vec<Message> {
     messages
 }
 
+fn message_has_user_text(msg: &Message) -> bool {
+    if msg.role != Role::User {
+        return false;
+    }
+    match &msg.content {
+        MessageContent::Text(t) => !t.trim().is_empty(),
+        MessageContent::Blocks(blocks) => blocks.iter().any(|b| {
+            matches!(b, ContentBlock::Text { text, .. } if !text.trim().is_empty())
+        }),
+        _ => false,
+    }
+}
+
+/// Ensure at least one user message with non-empty text exists.
+///
+/// Qwen/vLLM chat templates error with "No user query found in messages" when
+/// history contains only assistant/tool turns (e.g. after aggressive trim/repair).
+pub fn ensure_has_user_text(mut messages: Vec<Message>) -> Vec<Message> {
+    if messages.iter().any(message_has_user_text) {
+        return messages;
+    }
+    warn!("No user text in message history — injecting placeholder for provider compatibility");
+    messages.insert(0, Message::user("Hello"));
+    messages
+}
+
 /// Phase 2b: Reorder misplaced ToolResults -- ensure each result follows its use.
 ///
 /// Builds a map of tool_use_id to the index of the assistant message containing it.

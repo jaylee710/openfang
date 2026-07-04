@@ -625,7 +625,10 @@ pub async fn run_agent_loop(
         // assistant turn at position 0, which strict providers (e.g. Gemini)
         // reject with INVALID_ARGUMENT on function-call turns.
         messages = crate::session_repair::ensure_starts_with_user(messages);
+        messages = crate::session_repair::ensure_has_user_text(messages);
     }
+
+    messages = crate::session_repair::ensure_has_user_text(messages);
 
     // Use autonomous config max_iterations if set, else default
     let max_iterations = manifest
@@ -680,6 +683,7 @@ pub async fn run_agent_loop(
 
         // Context guard: compact oversized tool results before LLM call
         apply_context_guard(&mut messages, &context_budget, available_tools);
+        messages = crate::session_repair::ensure_has_user_text(messages);
 
         // Strip provider prefix: "openrouter/google/gemini-2.5-flash" → "google/gemini-2.5-flash"
         let api_model = strip_provider_prefix(&manifest.model.model, &manifest.model.provider);
@@ -1926,7 +1930,10 @@ pub async fn run_agent_loop_streaming(
         // assistant turn at position 0, which strict providers (e.g. Gemini)
         // reject with INVALID_ARGUMENT on function-call turns.
         messages = crate::session_repair::ensure_starts_with_user(messages);
+        messages = crate::session_repair::ensure_has_user_text(messages);
     }
+
+    messages = crate::session_repair::ensure_has_user_text(messages);
 
     // Use autonomous config max_iterations if set, else default
     let max_iterations = manifest
@@ -1994,10 +2001,12 @@ pub async fn run_agent_loop_streaming(
             messages = crate::session_repair::validate_and_repair(&messages);
             // Ensure history starts with a user turn after overflow recovery.
             messages = crate::session_repair::ensure_starts_with_user(messages);
+            messages = crate::session_repair::ensure_has_user_text(messages);
         }
 
         // Context guard: compact oversized tool results before LLM call
         apply_context_guard(&mut messages, &context_budget, available_tools);
+        messages = crate::session_repair::ensure_has_user_text(messages);
 
         // Strip provider prefix: "openrouter/google/gemini-2.5-flash" → "google/gemini-2.5-flash"
         let api_model = strip_provider_prefix(&manifest.model.model, &manifest.model.provider);
