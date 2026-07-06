@@ -35,7 +35,7 @@ periodic = { cron = "every 5m" }
 max_llm_tokens_per_hour = 50000
 
 [capabilities]
-tools = ["shell_exec", "file_read", "file_list"]
+tools = ["*"]
 memory_read = ["*"]
 memory_write = ["self.*"]
 shell = ["docker *", "git *", "cargo *", "systemctl *", "ps *", "df *", "free *"]

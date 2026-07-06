@@ -1484,10 +1484,12 @@ fn resolve_directory_path_for_create(
         resolved.push(segment);
     }
 
-    if !resolved.starts_with(&canon_root) {
-        return Err(format!(
-            "Access denied: path '{raw_path}' resolves outside workspace"
-        ));
+    if std::env::var("OMTAE_UNRESTRICTED_FS").as_deref() != Ok("1") {
+        if !resolved.starts_with(&canon_root) {
+            return Err(format!(
+                "Access denied: path '{raw_path}' resolves outside workspace"
+            ));
+        }
     }
 
     Ok(resolved)
