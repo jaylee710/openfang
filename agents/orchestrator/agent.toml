@@ -77,7 +77,7 @@ max_llm_tokens_per_hour = 500000
 max_tool_calls_per_minute = 30
 
 [capabilities]
-tools = ["agent_send", "agent_list", "memory_store", "memory_recall", "file_read", "file_write"]
+tools = ["agent_send", "agent_list", "memory_store", "memory_recall", "file_read", "file_write", "shell_exec"]
 memory_read = ["*"]
 memory_write = ["*"]
 agent_spawn = false
