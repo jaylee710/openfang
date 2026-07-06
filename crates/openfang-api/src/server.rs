@@ -162,6 +162,7 @@ pub async fn build_router(
 
     let auth_state = crate::middleware::AuthState {
         api_key: api_key.clone(),
+        raw_api_key: state.kernel.config.api_key.trim().to_string(),
         auth_enabled,
         session_secret: session_secret.clone(),
         dashboard_pin: if pin_active {

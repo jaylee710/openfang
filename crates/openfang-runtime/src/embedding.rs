@@ -92,11 +92,16 @@ impl OpenAIEmbeddingDriver {
         // Infer dimensions from model name (common models)
         let dims = infer_dimensions(&config.model);
 
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(10))
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
+
         Ok(Self {
             api_key: Zeroizing::new(config.api_key),
             base_url: config.base_url,
             model: config.model,
-            client: reqwest::Client::new(),
+            client,
             dims,
         })
     }

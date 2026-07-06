@@ -930,6 +930,7 @@ async fn start_test_server_with_auth(api_key: &str) -> TestServer {
     let api_key = state.kernel.config.effective_api_key_for_auth();
     let auth_state = middleware::AuthState {
         api_key: api_key.clone(),
+        raw_api_key: state.kernel.config.api_key.trim().to_string(),
         auth_enabled: state.kernel.config.dashboard_auth_enabled(),
         session_secret: state.kernel.config.dashboard_session_secret(),
         dashboard_pin: if state.kernel.config.dashboard.pin_auth_active() {

@@ -713,7 +713,7 @@ impl LlmDriver for OpenAIDriver {
                 }
 
                 // Auto-cap max_tokens when model rejects our value (e.g. Groq Maverick limit 8192)
-                if status == 400 && body.contains("max_tokens") && attempt < max_retries {
+                if status == 400 && (body.contains("max_tokens") || body.contains("context length") || body.contains("context_length") || body.contains("maximum context") || body.contains("too long") || body.contains("output tokens") || body.contains("max_completion_tokens")) && attempt < max_retries {
                     let current = oai_request
                         .max_tokens
                         .or(oai_request.max_completion_tokens)
@@ -1136,7 +1136,7 @@ impl LlmDriver for OpenAIDriver {
                 }
 
                 // Auto-cap max_tokens when model rejects our value
-                if status == 400 && body.contains("max_tokens") && attempt < max_retries {
+                if status == 400 && (body.contains("max_tokens") || body.contains("context length") || body.contains("context_length") || body.contains("maximum context") || body.contains("too long") || body.contains("output tokens") || body.contains("max_completion_tokens")) && attempt < max_retries {
                     let current = oai_request
                         .max_tokens
                         .or(oai_request.max_completion_tokens)
@@ -1618,7 +1618,28 @@ fn extract_thinking_summary(thinking: &str) -> String {
 /// Parse Groq's `tool_use_failed` error and extract the tool call from `failed_generation`.
 /// Extract the max_tokens limit from an API error message.
 /// Looks for patterns like: `must be less than or equal to \`8192\``
-fn extract_max_tokens_limit(body: &str) -> Option<u32> {
+pub(crate) fn extract_max_tokens_limit(body: &str) -> Option<u32> {
+    // Handle vLLM context length message:
+    // "This model's maximum context length is <MAX> tokens. However, you requested <REQ> output tokens and your prompt contains at least <INP> input tokens."
+    if let Some(idx) = body.find("maximum context length is ") {
+        let after_max = &body[idx + "maximum context length is ".len()..];
+        if let Some(end_max) = after_max.find(' ') {
+            if let Ok(max_ctx) = after_max[..end_max].parse::<u32>() {
+                if let Some(idx_prompt) = body.find("prompt contains at least ") {
+                    let after_prompt = &body[idx_prompt + "prompt contains at least ".len()..];
+                    if let Some(end_prompt) = after_prompt.find(' ') {
+                        if let Ok(prompt_tokens) = after_prompt[..end_prompt].parse::<u32>() {
+                            if max_ctx > prompt_tokens {
+                                // Return the remaining tokens minus a small safety buffer (e.g. 16)
+                                return Some(max_ctx.saturating_sub(prompt_tokens).saturating_sub(16));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // Pattern: "must be <= `N`" or "must be less than or equal to `N`"
     let patterns = [
         "less than or equal to `",
@@ -1834,6 +1855,9 @@ mod tests {
     fn test_extract_max_tokens_limit() {
         let body = r#"max_tokens must be less than or equal to `8192`"#;
         assert_eq!(extract_max_tokens_limit(body), Some(8192));
+
+        let vllm_err = "This model's maximum context length is 32768 tokens. However, you requested 16384 output tokens and your prompt contains at least 16385 input tokens.";
+        assert_eq!(extract_max_tokens_limit(vllm_err), Some(32768 - 16385 - 16));
     }
 
     #[test]

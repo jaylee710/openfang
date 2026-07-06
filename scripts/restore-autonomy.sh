@@ -4,7 +4,7 @@
 set -euo pipefail
 
 API="${OMTAE_API:-http://127.0.0.1:4200}"
-PIN="${OMTAE_PIN:-123456}"
+PIN="${OMTAE_PIN:-839201}"
 H="X-OMTAE-Pin: ${PIN}"
 
 curl_api() {
@@ -17,7 +17,7 @@ curl_api "$API/api/health"
 echo ""
 echo "==> Spawn core agents (idempotent)"
 for name in researcher analyst coder ops-fixer; do
-  curl -sf -X POST "$API/api/agents/spawn" -H "Content-Type: application/json" -H "$H" \
+  curl -sf -X POST "$API/api/agents" -H "Content-Type: application/json" -H "$H" \
     -d "{\"template\":\"$name\"}" >/dev/null 2>&1 || true
 done
 
@@ -32,13 +32,6 @@ for a in json.load(sys.stdin):
 "
 }
 
-OPS="$(agent_id ops-fixer)"
-RES="$(agent_id researcher)"
-LEAD="$(agent_id lead-vault)"
-COLL="$(agent_id collector-market)"
-
-echo "ops-fixer=$OPS researcher=$RES lead=$LEAD collector=$COLL"
-
 echo ""
 echo "==> Activate hands"
 activate_hand() {
@@ -49,6 +42,14 @@ activate_hand() {
 activate_hand lead lead-vault
 activate_hand collector collector-market
 activate_hand browser browser-hand 2>/dev/null || true
+
+OPS="$(agent_id ops-fixer)"
+RES="$(agent_id researcher)"
+LEAD="$(agent_id lead-vault)"
+COLL="$(agent_id collector-market)"
+
+echo "ops-fixer=$OPS researcher=$RES lead=$LEAD collector=$COLL"
+
 
 echo ""
 echo "==> Ensure schedules (skip if already present)"
@@ -82,7 +83,7 @@ ensure_schedule "collector-sweep" "0 */6 * * *" "$COLL" \
   "Run intelligence collection sweep on AI agent platforms and local LLM market. Update knowledge graph and write markdown report."
 
 ensure_schedule "nightly-brain-sync" "0 7 * * *" "$RES" \
-  "Brain sync: curl -s -H X-OMTAE-Pin:123456 http://127.0.0.1:4200/api/brain/status and file_list /home/jay/vaults/omtae-brain/leads. Summarize lead count and vault health."
+  "Brain sync: curl -s -H X-OMTAE-Pin:839201 http://127.0.0.1:4200/api/brain/status and file_list /home/jay/vaults/omtae-brain/leads. Summarize lead count and vault health."
 
 BRAIN_WF="${BRAIN_WORKFLOW_ID:-9b3e8715-d5cf-4eb6-8321-63e73b16f2b8}"
 ensure_workflow_schedule() {
@@ -112,7 +113,7 @@ for s in json.load(sys.stdin).get('schedules', []):
     | python3 -c "import sys,json; d=json.load(sys.stdin); r=json.loads(d.get('result','{}')); print('  created', '$name', r.get('job_id', d))"
 }
 
-ensure_workflow_schedule "weekly-brain-pipeline" "0 8 * * 0" "$BRAIN_WF"
+ensure_workflow_schedule "weekly-brain-pipeline" "0 8 * * 7" "$BRAIN_WF"
 
 echo ""
 echo "==> EvoMap heartbeat"

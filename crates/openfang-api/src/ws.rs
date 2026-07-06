@@ -195,6 +195,8 @@ fn try_acquire_ws_slot(ip: IpAddr) -> Option<WsConnectionGuard> {
 pub(crate) struct WsAuthCtx<'a> {
     /// Trimmed API key from kernel config. Empty string means no key configured.
     pub api_key: &'a str,
+    /// Unmodified/raw api key from kernel config (even if PIN auth is active).
+    pub raw_api_key: &'a str,
     /// Whether dashboard session login is enabled in config.
     pub auth_enabled: bool,
     /// Secret used to verify session cookies (api_key when set, else password hash).
@@ -225,6 +227,33 @@ pub(crate) struct WsAuthCtx<'a> {
 pub(crate) fn check_ws_auth(ctx: &WsAuthCtx<'_>) -> Result<(), axum::http::StatusCode> {
     use axum::http::StatusCode;
 
+    // SECURITY: constant-time comparison helper.
+    let ct_eq = |token: &str, key: &str| -> bool {
+        use subtle::ConstantTimeEq;
+        if token.len() != key.len() {
+            return false;
+        }
+        token.as_bytes().ct_eq(key.as_bytes()).into()
+    };
+
+    // Unconditionally allow loopback connections using internal credential
+    if !ctx.raw_api_key.is_empty() {
+        let internal_query_auth = ctx
+            .uri
+            .query()
+            .and_then(|q| {
+                q.split('&').find_map(|pair| {
+                    pair.strip_prefix("internal=")
+                })
+            })
+            .map(crate::percent_decode)
+            .map(|token| ct_eq(&token, ctx.raw_api_key))
+            .unwrap_or(false);
+        if internal_query_auth {
+            return Ok(());
+        }
+    }
+
     // No api_key configured: behavior depends on whether dashboard auth is on.
     //
     // Issue #1189: previously this path allowed any loopback request through
@@ -250,14 +279,6 @@ pub(crate) fn check_ws_auth(ctx: &WsAuthCtx<'_>) -> Result<(), axum::http::Statu
         return Err(StatusCode::UNAUTHORIZED);
     }
 
-    // SECURITY: constant-time comparison to prevent timing attacks on API key.
-    let ct_eq = |token: &str, key: &str| -> bool {
-        use subtle::ConstantTimeEq;
-        if token.len() != key.len() {
-            return false;
-        }
-        token.as_bytes().ct_eq(key.as_bytes()).into()
-    };
 
     let header_auth = ctx
         .headers
@@ -273,7 +294,12 @@ pub(crate) fn check_ws_auth(ctx: &WsAuthCtx<'_>) -> Result<(), axum::http::Statu
     let query_auth = ctx
         .uri
         .query()
-        .and_then(|q| q.split('&').find_map(|pair| pair.strip_prefix("token=")))
+        .and_then(|q| {
+            q.split('&').find_map(|pair| {
+                pair.strip_prefix("token=")
+                    .or_else(|| pair.strip_prefix("internal="))
+            })
+        })
         .map(crate::percent_decode)
         .map(|token| ct_eq(&token, ctx.api_key))
         .unwrap_or(false);
@@ -290,6 +316,9 @@ pub(crate) fn check_ws_auth(ctx: &WsAuthCtx<'_>) -> Result<(), axum::http::Statu
 
 /// PIN header/cookie/query or session cookie/query for dashboard auth.
 fn ws_dashboard_auth_ok(ctx: &WsAuthCtx<'_>) -> bool {
+    if !ctx.auth_enabled {
+        return false;
+    }
     if !ctx.dashboard_pin.is_empty() {
         if let Some(pin) = ctx
             .headers
@@ -363,6 +392,8 @@ pub async fn agent_ws(
     let cfg = &state.kernel.config;
     let api_key_owned = cfg.effective_api_key_for_auth();
     let api_key = api_key_owned.as_str();
+    let raw_api_key_owned = cfg.api_key.trim().to_string();
+    let raw_api_key = raw_api_key_owned.as_str();
     let is_loopback = addr.ip().is_loopback();
     let allow_no_auth = std::env::var("OPENFANG_ALLOW_NO_AUTH")
         .map(|v| matches!(v.trim(), "1" | "true" | "TRUE" | "yes" | "on"))
@@ -380,6 +411,7 @@ pub async fn agent_ws(
 
     let auth_ctx = WsAuthCtx {
         api_key,
+        raw_api_key,
         auth_enabled,
         session_secret: &session_secret_owned,
         dashboard_pin: &dashboard_pin_owned,
@@ -1812,6 +1844,7 @@ mod tests {
         let uri = empty_uri();
         let ctx = WsAuthCtx {
             api_key: "secret",
+            raw_api_key: "secret",
             auth_enabled: false,
             session_secret: "secret",
             dashboard_pin: "",
@@ -1829,6 +1862,7 @@ mod tests {
         let uri = uri_with_token("secret");
         let ctx = WsAuthCtx {
             api_key: "secret",
+            raw_api_key: "secret",
             auth_enabled: false,
             session_secret: "secret",
             dashboard_pin: "",
@@ -1851,6 +1885,7 @@ mod tests {
         let uri = empty_uri();
         let ctx = WsAuthCtx {
             api_key: secret,
+            raw_api_key: secret,
             auth_enabled: true,
             session_secret: secret,
             dashboard_pin: "",
@@ -1878,6 +1913,7 @@ mod tests {
         let uri = empty_uri();
         let ctx = WsAuthCtx {
             api_key: secret,
+            raw_api_key: secret,
             auth_enabled: false,
             session_secret: secret,
             dashboard_pin: "",
@@ -1901,6 +1937,7 @@ mod tests {
         let uri = empty_uri();
         let ctx = WsAuthCtx {
             api_key: "secret",
+            raw_api_key: "secret",
             auth_enabled: true,
             session_secret: "secret",
             dashboard_pin: "",
@@ -1921,6 +1958,7 @@ mod tests {
         let uri = empty_uri();
         let ctx = WsAuthCtx {
             api_key: "secret",
+            raw_api_key: "secret",
             auth_enabled: true,
             session_secret: "secret",
             dashboard_pin: "",
@@ -1942,6 +1980,7 @@ mod tests {
         let uri = empty_uri();
         let ctx = WsAuthCtx {
             api_key: "secret",
+            raw_api_key: "secret",
             auth_enabled: false,
             session_secret: "secret",
             dashboard_pin: "",
@@ -1962,6 +2001,7 @@ mod tests {
         let uri = empty_uri();
         let ctx = WsAuthCtx {
             api_key: "",
+            raw_api_key: "",
             auth_enabled: false,
             session_secret: "",
             dashboard_pin: "",
@@ -1980,6 +2020,7 @@ mod tests {
         let uri = empty_uri();
         let ctx = WsAuthCtx {
             api_key: "",
+            raw_api_key: "",
             auth_enabled: false,
             session_secret: "",
             dashboard_pin: "",
@@ -2000,6 +2041,7 @@ mod tests {
         let uri = empty_uri();
         let ctx = WsAuthCtx {
             api_key: "",
+            raw_api_key: "",
             auth_enabled: false,
             session_secret: "",
             dashboard_pin: "",
@@ -2025,6 +2067,7 @@ mod tests {
         let uri = empty_uri();
         let ctx = WsAuthCtx {
             api_key: "",
+            raw_api_key: "",
             auth_enabled: true,
             session_secret: secret,
             dashboard_pin: "",
@@ -2052,6 +2095,7 @@ mod tests {
         let uri = empty_uri();
         let ctx = WsAuthCtx {
             api_key: "",
+            raw_api_key: "",
             auth_enabled: true,
             session_secret: secret,
             dashboard_pin: "",
@@ -2081,6 +2125,7 @@ mod tests {
         let uri = empty_uri();
         let ctx = WsAuthCtx {
             api_key: "",
+            raw_api_key: "",
             auth_enabled: true,
             session_secret: secret,
             dashboard_pin: "",
@@ -2103,6 +2148,7 @@ mod tests {
         let uri = empty_uri();
         let ctx = WsAuthCtx {
             api_key: "",
+            raw_api_key: "",
             auth_enabled: false,
             session_secret: "",
             dashboard_pin: "",
@@ -2114,6 +2160,27 @@ mod tests {
         assert!(
             check_ws_auth(&ctx).is_ok(),
             "loopback dev path must work when dashboard auth is disabled"
+        );
+    }
+
+    #[test]
+    fn ws_auth_accepts_internal_token_even_with_dashboard_auth() {
+        let headers = axum::http::HeaderMap::new();
+        let uri = "/api/agents/x/ws?internal=my-secret-key".parse().unwrap();
+        let ctx = WsAuthCtx {
+            api_key: "", // empty because dashboard/PIN auth is active
+            raw_api_key: "my-secret-key",
+            auth_enabled: true,
+            session_secret: "some-secret",
+            dashboard_pin: "123456",
+            is_loopback: true,
+            allow_no_auth: false,
+            headers: &headers,
+            uri: &uri,
+        };
+        assert!(
+            check_ws_auth(&ctx).is_ok(),
+            "internal query token must bypass dashboard/PIN auth"
         );
     }
 }

@@ -41,6 +41,25 @@ const MAX_ITERATIONS: u32 = 50;
 /// Maximum retries for rate-limited or overloaded API calls.
 const MAX_RETRIES: u32 = 3;
 
+fn is_context_overflow_error(err: &OMTAEError) -> Option<String> {
+    match err {
+        OMTAEError::LlmDriver(msg) => {
+            let msg_lower = msg.to_lowercase();
+            if msg_lower.contains("context too long")
+                || msg_lower.contains("context length")
+                || msg_lower.contains("too long")
+                || msg_lower.contains("context window")
+            {
+                Some(msg.clone())
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+
 /// Base delay for exponential backoff (milliseconds).
 const BASE_RETRY_DELAY_MS: u64 = 1000;
 
@@ -711,14 +730,65 @@ pub async fn run_agent_loop(
 
         // Call LLM with retry, error classification, and circuit breaker
         let provider_name = manifest.model.provider.as_str();
-        let mut response = call_with_retry(
-            &*driver,
-            request,
-            Some(provider_name),
-            None,
-            &manifest.fallback_models,
-        )
-        .await?;
+        let mut response = {
+            let mut active_request = request.clone();
+            let mut overflow_attempts = 0;
+            loop {
+                match call_with_retry(
+                    &*driver,
+                    active_request.clone(),
+                    Some(provider_name),
+                    None,
+                    &manifest.fallback_models,
+                )
+                .await
+                {
+                    Ok(resp) => break resp,
+                    Err(e) => {
+                        if let Some(err_msg) = is_context_overflow_error(&e) {
+                            if overflow_attempts < 3 {
+                                overflow_attempts += 1;
+                                warn!(
+                                    overflow_attempts,
+                                    "Context overflow detected in agent loop. Attempting recovery..."
+                                );
+                                // 1. Attempt to extract a safe limit using the error message
+                                let cap = crate::drivers::openai::extract_max_tokens_limit(&err_msg);
+                                // 2. Update max_tokens
+                                if let Some(safe_cap) = cap {
+                                    warn!(old = active_request.max_tokens, new = safe_cap, "Reducing request max_tokens");
+                                    active_request.max_tokens = safe_cap;
+                                } else {
+                                    // Otherwise reduce max_tokens by 25%
+                                    let new_max = (active_request.max_tokens * 3) / 4;
+                                    warn!(old = active_request.max_tokens, new = new_max, "Reducing request max_tokens by 25%");
+                                    active_request.max_tokens = new_max.max(256);
+                                }
+                                // 3. Trim the messages using recover_from_overflow.
+                                // We simulate a smaller context window to force truncation!
+                                // Reduce the effective context window by 15% on each attempt.
+                                let reduced_ctx = ((ctx_window as f64) * (1.0 - 0.15 * (overflow_attempts as f64))) as usize;
+                                warn!(reduced_ctx, "Running recover_from_overflow with reduced context window");
+                                let recovery = recover_from_overflow(
+                                    &mut messages,
+                                    &system_prompt,
+                                    available_tools,
+                                    reduced_ctx,
+                                );
+                                if recovery != RecoveryStage::None {
+                                    messages = crate::session_repair::validate_and_repair(&messages);
+                                    messages = crate::session_repair::ensure_starts_with_user(messages);
+                                    messages = crate::session_repair::ensure_has_user_text(messages);
+                                }
+                                active_request.messages = messages.clone();
+                                continue;
+                            }
+                        }
+                        return Err(e);
+                    }
+                }
+            }
+        };
 
         total_usage.input_tokens += response.usage.input_tokens;
         total_usage.output_tokens += response.usage.output_tokens;
@@ -2040,15 +2110,66 @@ pub async fn run_agent_loop_streaming(
 
         // Stream LLM call with retry, error classification, and circuit breaker
         let provider_name = manifest.model.provider.as_str();
-        let mut response = stream_with_retry(
-            &*driver,
-            request,
-            stream_tx.clone(),
-            Some(provider_name),
-            None,
-            &manifest.fallback_models,
-        )
-        .await?;
+        let mut response = {
+            let mut active_request = request.clone();
+            let mut overflow_attempts = 0;
+            loop {
+                match stream_with_retry(
+                    &*driver,
+                    active_request.clone(),
+                    stream_tx.clone(),
+                    Some(provider_name),
+                    None,
+                    &manifest.fallback_models,
+                )
+                .await
+                {
+                    Ok(resp) => break resp,
+                    Err(e) => {
+                        if let Some(err_msg) = is_context_overflow_error(&e) {
+                            if overflow_attempts < 3 {
+                                overflow_attempts += 1;
+                                warn!(
+                                    overflow_attempts,
+                                    "Context overflow detected in agent loop (stream). Attempting recovery..."
+                                );
+                                // 1. Attempt to extract a safe limit using the error message
+                                let cap = crate::drivers::openai::extract_max_tokens_limit(&err_msg);
+                                // 2. Update max_tokens
+                                if let Some(safe_cap) = cap {
+                                    warn!(old = active_request.max_tokens, new = safe_cap, "Reducing request max_tokens");
+                                    active_request.max_tokens = safe_cap;
+                                } else {
+                                    // Otherwise reduce max_tokens by 25%
+                                    let new_max = (active_request.max_tokens * 3) / 4;
+                                    warn!(old = active_request.max_tokens, new = new_max, "Reducing request max_tokens by 25%");
+                                    active_request.max_tokens = new_max.max(256);
+                                }
+                                // 3. Trim the messages using recover_from_overflow.
+                                // We simulate a smaller context window to force truncation!
+                                // Reduce the effective context window by 15% on each attempt.
+                                let reduced_ctx = ((ctx_window as f64) * (1.0 - 0.15 * (overflow_attempts as f64))) as usize;
+                                warn!(reduced_ctx, "Running recover_from_overflow with reduced context window");
+                                let recovery = recover_from_overflow(
+                                    &mut messages,
+                                    &system_prompt,
+                                    available_tools,
+                                    reduced_ctx,
+                                );
+                                if recovery != RecoveryStage::None {
+                                    messages = crate::session_repair::validate_and_repair(&messages);
+                                    messages = crate::session_repair::ensure_starts_with_user(messages);
+                                    messages = crate::session_repair::ensure_has_user_text(messages);
+                                }
+                                active_request.messages = messages.clone();
+                                continue;
+                            }
+                        }
+                        return Err(e);
+                    }
+                }
+            }
+        };
 
         total_usage.input_tokens += response.usage.input_tokens;
         total_usage.output_tokens += response.usage.output_tokens;
@@ -6041,5 +6162,163 @@ mod tests {
         assert!(!is_silent_token("Hello, how can I help?"));
         assert!(!is_silent_token("SILENT"));
         assert!(!is_silent_token(""));
+    }
+
+    struct OverflowRecoveryDriver {
+        calls: std::sync::atomic::AtomicU32,
+    }
+
+    impl OverflowRecoveryDriver {
+        fn new() -> Self {
+            Self {
+                calls: std::sync::atomic::AtomicU32::new(0),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl LlmDriver for OverflowRecoveryDriver {
+        async fn complete(&self, req: CompletionRequest) -> Result<CompletionResponse, LlmError> {
+            let attempt = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if attempt == 0 {
+                Err(LlmError::Api {
+                    status: 400,
+                    message: "This model's maximum context length is 1000 tokens. However, you requested 500 output tokens and your prompt contains at least 550 input tokens.".to_string(),
+                })
+            } else {
+                assert!(req.max_tokens <= 434);
+                Ok(CompletionResponse {
+                    content: vec![ContentBlock::Text {
+                        text: "Recovered successfully!".to_string(),
+                        provider_metadata: None,
+                    }],
+                    stop_reason: StopReason::EndTurn,
+                    tool_calls: vec![],
+                    usage: TokenUsage {
+                        input_tokens: 30,
+                        output_tokens: 12,
+                    },
+                })
+            }
+        }
+
+        async fn stream(
+            &self,
+            req: CompletionRequest,
+            tx: mpsc::Sender<StreamEvent>,
+        ) -> Result<CompletionResponse, LlmError> {
+            let attempt = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if attempt == 0 {
+                Err(LlmError::Api {
+                    status: 400,
+                    message: "This model's maximum context length is 1000 tokens. However, you requested 500 output tokens and your prompt contains at least 550 input tokens.".to_string(),
+                })
+            } else {
+                assert!(req.max_tokens <= 434);
+                let _ = tx.send(StreamEvent::TextDelta {
+                    text: "Recovered streaming successfully!".to_string(),
+                }).await;
+                Ok(CompletionResponse {
+                    content: vec![ContentBlock::Text {
+                        text: "Recovered streaming successfully!".to_string(),
+                        provider_metadata: None,
+                    }],
+                    stop_reason: StopReason::EndTurn,
+                    tool_calls: vec![],
+                    usage: TokenUsage {
+                        input_tokens: 30,
+                        output_tokens: 12,
+                    },
+                })
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_context_overflow_recovery_sequential() {
+        let memory = omtae_memory::MemorySubstrate::open_in_memory(0.01).unwrap();
+        let agent_id = omtae_types::agent::AgentId::new();
+        let mut session = omtae_memory::session::Session {
+            id: omtae_types::agent::SessionId::new(),
+            agent_id,
+            messages: Vec::new(),
+            context_window_tokens: 0,
+            label: None,
+        };
+        let manifest = test_manifest();
+        let driver: Arc<dyn LlmDriver> = Arc::new(OverflowRecoveryDriver::new());
+
+        let result = run_agent_loop(
+            &manifest,
+            "Say hello",
+            &mut session,
+            &memory,
+            driver,
+            &[],
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(1000), // context_window_tokens override
+            None,
+            None,
+        )
+        .await
+        .expect("Sequential loop with context overflow should recover and complete");
+
+        assert_eq!(result.response, "Recovered successfully!");
+    }
+
+    #[tokio::test]
+    async fn test_context_overflow_recovery_streaming() {
+        let memory = omtae_memory::MemorySubstrate::open_in_memory(0.01).unwrap();
+        let agent_id = omtae_types::agent::AgentId::new();
+        let mut session = omtae_memory::session::Session {
+            id: omtae_types::agent::SessionId::new(),
+            agent_id,
+            messages: Vec::new(),
+            context_window_tokens: 0,
+            label: None,
+        };
+        let manifest = test_manifest();
+        let driver: Arc<dyn LlmDriver> = Arc::new(OverflowRecoveryDriver::new());
+        let (tx, _rx) = mpsc::channel(64);
+
+        let result = run_agent_loop_streaming(
+            &manifest,
+            "Say hello",
+            &mut session,
+            &memory,
+            driver,
+            &[],
+            None,
+            tx,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(1000), // context_window_tokens override
+            None,
+            None,
+        )
+        .await
+        .expect("Streaming loop with context overflow should recover and complete");
+
+        assert_eq!(result.response, "Recovered streaming successfully!");
     }
 }

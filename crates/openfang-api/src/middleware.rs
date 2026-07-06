@@ -47,6 +47,7 @@ pub async fn request_logging(request: Request<Body>, next: Next) -> Response<Bod
 #[derive(Clone)]
 pub struct AuthState {
     pub api_key: String,
+    pub raw_api_key: String,
     pub auth_enabled: bool,
     pub session_secret: String,
     /// Plaintext PIN from `[dashboard].pin` when PIN auth is active (for header check).
@@ -87,6 +88,28 @@ pub async fn auth(
     // Shutdown is loopback-only (CLI on same machine). Skip token auth only
     // when the request is from loopback.
     let path = request.uri().path();
+
+    // Check internal query parameter first, matching against raw_api_key.
+    // This allows loopback/adopted gateway shells to bypass PIN auth.
+    if !auth_state.raw_api_key.is_empty() {
+        let internal_token_decoded = request
+            .uri()
+            .query()
+            .and_then(|q| {
+                q.split('&').find_map(|pair| {
+                    pair.strip_prefix("internal=")
+                })
+            })
+            .map(crate::percent_decode);
+
+        if let Some(token) = internal_token_decoded {
+            use subtle::ConstantTimeEq;
+            let raw_key = auth_state.raw_api_key.trim();
+            if token.len() == raw_key.len() && token.as_bytes().ct_eq(raw_key.as_bytes()).into() {
+                return next.run(request).await;
+            }
+        }
+    }
     if path == "/api/shutdown" && is_loopback {
         return next.run(request).await;
     }
@@ -206,7 +229,12 @@ pub async fn auth(
     let query_token_decoded = request
         .uri()
         .query()
-        .and_then(|q| q.split('&').find_map(|pair| pair.strip_prefix("token=")))
+        .and_then(|q| {
+            q.split('&').find_map(|pair| {
+                pair.strip_prefix("token=")
+                    .or_else(|| pair.strip_prefix("internal="))
+            })
+        })
         .map(crate::percent_decode);
 
     // SECURITY: Use constant-time comparison to prevent timing attacks.
@@ -334,6 +362,7 @@ mod tests {
     fn auth_state_empty() -> AuthState {
         AuthState {
             api_key: String::new(),
+            raw_api_key: String::new(),
             auth_enabled: false,
             session_secret: String::new(),
             dashboard_pin: String::new(),
@@ -344,6 +373,7 @@ mod tests {
     fn auth_state_with_key(key: &str) -> AuthState {
         AuthState {
             api_key: key.to_string(),
+            raw_api_key: key.to_string(),
             auth_enabled: false,
             session_secret: key.to_string(),
             dashboard_pin: String::new(),
@@ -433,6 +463,29 @@ mod tests {
             .method(Method::GET)
             .uri("/api/agents/1")
             .header("authorization", "Bearer secret")
+            .body(Body::empty())
+            .unwrap();
+        req.extensions_mut().insert(ConnectInfo(addr));
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_internal_token_bypasses_pin_auth() {
+        // Simulates active PIN auth: api_key is empty, but raw_api_key is set.
+        let state = AuthState {
+            api_key: String::new(),
+            raw_api_key: "secret".to_string(),
+            auth_enabled: true,
+            session_secret: "hash".to_string(),
+            dashboard_pin: "123456".to_string(),
+            allow_no_auth: false,
+        };
+        let app = router(state);
+        let addr: SocketAddr = "127.0.0.1:40000".parse().unwrap();
+        let mut req = Request::builder()
+            .method(Method::GET)
+            .uri("/api/agents/1?internal=secret")
             .body(Body::empty())
             .unwrap();
         req.extensions_mut().insert(ConnectInfo(addr));
