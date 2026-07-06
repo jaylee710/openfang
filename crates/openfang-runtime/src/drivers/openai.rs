@@ -648,10 +648,18 @@ impl LlmDriver for OpenAIDriver {
                 req_builder = req_builder.header(k, v);
             }
 
-            let resp = req_builder
-                .send()
-                .await
-                .map_err(|e| LlmError::Http(e.to_string()))?;
+            let resp = match req_builder.send().await {
+                Ok(r) => r,
+                Err(e) => {
+                    if attempt < max_retries {
+                        let retry_ms = (attempt + 1) as u64 * 1000;
+                        warn!(error = %e, attempt, retry_ms, "HTTP request send failed, retrying");
+                        tokio::time::sleep(std::time::Duration::from_millis(retry_ms)).await;
+                        continue;
+                    }
+                    return Err(LlmError::Http(e.to_string()));
+                }
+            };
 
             let status = resp.status().as_u16();
             if status == 429 {
@@ -1070,10 +1078,18 @@ impl LlmDriver for OpenAIDriver {
                 req_builder = req_builder.header(k, v);
             }
 
-            let resp = req_builder
-                .send()
-                .await
-                .map_err(|e| LlmError::Http(e.to_string()))?;
+            let resp = match req_builder.send().await {
+                Ok(r) => r,
+                Err(e) => {
+                    if attempt < max_retries {
+                        let retry_ms = (attempt + 1) as u64 * 1000;
+                        warn!(error = %e, attempt, retry_ms, "HTTP request send failed (stream), retrying");
+                        tokio::time::sleep(std::time::Duration::from_millis(retry_ms)).await;
+                        continue;
+                    }
+                    return Err(LlmError::Http(e.to_string()));
+                }
+            };
 
             let status = resp.status().as_u16();
             if status == 429 {
